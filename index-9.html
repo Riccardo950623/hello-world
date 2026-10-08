@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Riccardo Pantanali</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      touch-action: none;
+    }
+    .word {
+      position: absolute;
+      top: 0;
+      left: 0;
+      font-family: "Times New Roman", Times, serif;
+      font-size: 2.5rem;
+      letter-spacing: -0.03em;
+      white-space: nowrap;
+      color: #fff;
+      mix-blend-mode: difference;
+      user-select: none;
+    }
+    #center {
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+    }
+    #ball {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #fff;
+      mix-blend-mode: difference;
+    }
+    /* la camera resta attiva ma invisibile */
+    #cam {
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <video id="cam" playsinline muted autoplay></video>
+  <div class="word" id="w1">Riccardo</div>
+  <div class="word" id="w2">Pantanali</div>
+  <div class="word" id="center">Graphic and Motion Design Practice</div>
+  <div id="ball"></div>
+
+  <script type="module">
+    import { FilesetResolver, HandLandmarker }
+      from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+    // ---------- Impostazioni ----------
+    const R = 10;               // raggio della pallina
+    const SMOOTH = 0.35;        // 0-1: più basso = movimento più morbido ma con ritardo
+    const MARGIN = 0.1;         // zona ai bordi della camera ignorata, per raggiungere gli angoli
+    const TRANSFER = 1.2;       // forza trasmessa dalla pallina alle parole
+    const MAX_BOOST = 4;        // velocità massima delle parole = base x questo valore
+    const DECAY = 0.985;        // quanto in fretta le parole tornano alla velocità base
+
+    const ballEl = document.getElementById('ball');
+    const video = document.getElementById('cam');
+
+    const ball = { x: window.innerWidth * 0.3, y: window.innerHeight * 0.75, vx: 0, vy: 0 };
+    let target = null;          // posizione richiesta dal dito (null = nessuna mano)
+
+    function makeWord(id, x, y, vx, vy) {
+      return { el: document.getElementById(id), x, y, vx, vy, speed: Math.hypot(vx, vy), w: 0, h: 0 };
+    }
+    const words = [
+      makeWord('w1', 50, 80, 2.2, 1.6),
+      makeWord('w2', 400, 300, -1.8, 2.1)
+    ];
+
+    // ---------- Camera e riconoscimento della mano ----------
+    let handLandmarker = null;
+    let cameraOk = false;
+    let lastVideoTime = -1;
+
+    async function initHand() {
+      const fileset = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+      );
+      const modelUrl = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+      try {
+        handLandmarker = await HandLandmarker.createFromOptions(fileset, {
+          baseOptions: { modelAssetPath: modelUrl, delegate: "GPU" },
+          runningMode: "VIDEO", numHands: 1
+        });
+      } catch (e) {
+        handLandmarker = await HandLandmarker.createFromOptions(fileset, {
+          baseOptions: { modelAssetPath: modelUrl, delegate: "CPU" },
+          runningMode: "VIDEO", numHands: 1
+        });
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: 640, height: 480 }, audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+      cameraOk = true;
+    }
+
+    initHand().catch(err => {
+      console.warn("Camera o riconoscimento non disponibili, uso il puntatore:", err);
+      enablePointerFallback();
+    });
+
+    function detectHand() {
+      if (!cameraOk || !handLandmarker || video.readyState < 2) return;
+      if (video.currentTime === lastVideoTime) return;
+      lastVideoTime = video.currentTime;
+
+      const result = handLandmarker.detectForVideo(video, performance.now());
+      if (result.landmarks && result.landmarks.length > 0) {
+        const tip = result.landmarks[0][8];              // punta dell'indice
+        const mx = 1 - tip.x;                            // specchia l'immagine
+        const nx = Math.min(1, Math.max(0, (mx - MARGIN) / (1 - 2 * MARGIN)));
+        const ny = Math.min(1, Math.max(0, (tip.y - MARGIN) / (1 - 2 * MARGIN)));
+        target = { x: nx * window.innerWidth, y: ny * window.innerHeight };
+      } else {
+        target = null;                                   // nessuna mano: la pallina resta ferma
+      }
+    }
+
+    // Se la camera non parte, la pallina segue mouse o dito sullo schermo
+    function enablePointerFallback() {
+      const set = e => { target = { x: e.clientX, y: e.clientY }; };
+      window.addEventListener('pointerdown', set);
+      window.addEventListener('pointermove', set);
+    }
+
+    // ---------- Fisica ----------
+    function wordHitByBall(b) {
+      const o = { l: b.x, t: b.y, r: b.x + b.w, b: b.y + b.h };
+      const cx = Math.max(o.l, Math.min(ball.x, o.r));
+      const cy = Math.max(o.t, Math.min(ball.y, o.b));
+      const dx = ball.x - cx, dy = ball.y - cy;
+      const dist = Math.hypot(dx, dy);
+      let nx, ny, pen;                                   // normale: dalla parola verso la pallina
+
+      if (dist > 0) {
+        if (dist >= R) return;
+        nx = dx / dist; ny = dy / dist; pen = R - dist;
+      } else {
+        const dl = ball.x - o.l, dr = o.r - ball.x, dt = ball.y - o.t, db = o.b - ball.y;
+        const m = Math.min(dl, dr, dt, db);
+        if (m === dl)      { nx = -1; ny = 0; }
+        else if (m === dr) { nx = 1;  ny = 0; }
+        else if (m === dt) { nx = 0;  ny = -1; }
+        else               { nx = 0;  ny = 1; }
+        pen = m + R;
+      }
+
+      // la parola esce dalla pallina
+      b.x -= nx * pen;
+      b.y -= ny * pen;
+
+      // rimbalzo se la parola si muoveva verso la pallina
+      const wn = b.vx * nx + b.vy * ny;
+      if (wn > 0) { b.vx -= 2 * wn * nx; b.vy -= 2 * wn * ny; }
+
+      // la pallina trasmette la sua spinta
+      const bn = ball.vx * nx + ball.vy * ny;
+      if (bn < 0) { b.vx += bn * nx * TRANSFER; b.vy += bn * ny * TRANSFER; }
+
+      // limite di velocità
+      const s = Math.hypot(b.vx, b.vy);
+      const max = b.speed * MAX_BOOST;
+      if (s > max) { b.vx = b.vx / s * max; b.vy = b.vy / s * max; }
+    }
+
+    function relaxSpeed(b) {
+      const s = Math.hypot(b.vx, b.vy);
+      if (s > b.speed) {
+        const ns = Math.max(b.speed, s * DECAY);
+        b.vx = b.vx / s * ns;
+        b.vy = b.vy / s * ns;
+      }
+    }
+
+    function animate() {
+      const W = window.innerWidth, H = window.innerHeight;
+
+      detectHand();
+
+      // pallina: segue il dito
+      if (target) {
+        const px = ball.x, py = ball.y;
+        ball.x += (target.x - ball.x) * SMOOTH;
+        ball.y += (target.y - ball.y) * SMOOTH;
+        ball.x = Math.min(W - R, Math.max(R, ball.x));
+        ball.y = Math.min(H - R, Math.max(R, ball.y));
+        ball.vx = ball.x - px;
+        ball.vy = ball.y - py;
+      } else {
+        ball.vx = 0;
+        ball.vy = 0;
+      }
+
+      // parole
+      for (const b of words) {
+        b.w = b.el.offsetWidth;
+        b.h = b.el.offsetHeight;
+        b.x += b.vx;
+        b.y += b.vy;
+
+        wordHitByBall(b);
+        relaxSpeed(b);
+
+        if (b.x <= 0)            { b.x = 0;       b.vx =  Math.abs(b.vx); }
+        else if (b.x >= W - b.w) { b.x = W - b.w; b.vx = -Math.abs(b.vx); }
+        if (b.y <= 0)            { b.y = 0;       b.vy =  Math.abs(b.vy); }
+        else if (b.y >= H - b.h) { b.y = H - b.h; b.vy = -Math.abs(b.vy); }
+
+        b.el.style.transform = `translate(${b.x}px, ${b.y}px)`;
+      }
+
+      ballEl.style.transform = `translate(${ball.x - R}px, ${ball.y - R}px)`;
+      requestAnimationFrame(animate);
+    }
+
+    animate();
+  </script>
+</body>
+</html>
