@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Riccardo Pantanali</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+    }
+    .word {
+      position: absolute;
+      top: 0;
+      left: 0;
+      font-family: "Times New Roman", Times, serif;
+      font-size: 2.5rem;
+      letter-spacing: -0.03em;
+      white-space: nowrap;
+      color: #fff;
+      mix-blend-mode: difference;
+      user-select: none;
+    }
+    #center {
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+    }
+    #ball {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #fff;
+      mix-blend-mode: difference;
+    }
+  </style>
+</head>
+<body>
+  <div class="word" id="w1">Riccardo</div>
+  <div class="word" id="w2">Pantanali</div>
+  <div class="word" id="center">Graphic and Motion Design Practice</div>
+  <div id="ball"></div>
+
+  <script>
+    const R = 10;               // raggio della pallina
+    const WORD_MASS = 4;        // più alto = le parole deviano meno
+    const BALL_MASS = 1;
+
+    const center = document.getElementById('center');
+    const ballEl = document.getElementById('ball');
+
+    function makeWord(id, x, y, vx, vy) {
+      return { el: document.getElementById(id), x, y, vx, vy, speed: Math.hypot(vx, vy), w: 0, h: 0 };
+    }
+
+    const words = [
+      makeWord('w1', 50, 80, 2.2, 1.6),
+      makeWord('w2', 400, 300, -1.8, 2.1)
+    ];
+
+    const ball = { x: window.innerWidth * 0.3, y: window.innerHeight * 0.75, vx: 3, vy: -2.4 };
+    const ballSpeed = Math.hypot(ball.vx, ball.vy);
+
+    function setSpeed(o, speed) {
+      const s = Math.hypot(o.vx, o.vy) || 1;
+      o.vx = o.vx / s * speed;
+      o.vy = o.vy / s * speed;
+    }
+
+    // Pallina contro una parola: la parola viene deviata dall'urto.
+    function ballVsRect(o, word) {
+      const cx = Math.max(o.l, Math.min(ball.x, o.r));
+      const cy = Math.max(o.t, Math.min(ball.y, o.b));
+      let dx = ball.x - cx, dy = ball.y - cy;
+      let dist = Math.hypot(dx, dy);
+      let nx, ny, pen;
+
+      if (dist > 0) {
+        if (dist >= R) return;
+        nx = dx / dist; ny = dy / dist; pen = R - dist;
+      } else {
+        // centro della pallina dentro il rettangolo: uscita dal lato più vicino
+        const dl = ball.x - o.l, dr = o.r - ball.x, dt = ball.y - o.t, db = o.b - ball.y;
+        const m = Math.min(dl, dr, dt, db);
+        if (m === dl)      { nx = -1; ny = 0; }
+        else if (m === dr) { nx = 1;  ny = 0; }
+        else if (m === dt) { nx = 0;  ny = -1; }
+        else               { nx = 0;  ny = 1; }
+        pen = m + R;
+      }
+
+      ball.x += nx * pen;
+      ball.y += ny * pen;
+
+      {
+        const vrel = (ball.vx - word.vx) * nx + (ball.vy - word.vy) * ny;
+        if (vrel < 0) {
+          const j = -2 * vrel / (1 / BALL_MASS + 1 / WORD_MASS);
+          ball.vx += (j / BALL_MASS) * nx;
+          ball.vy += (j / BALL_MASS) * ny;
+          word.vx -= (j / WORD_MASS) * nx;
+          word.vy -= (j / WORD_MASS) * ny;
+          setSpeed(word, word.speed);
+          setSpeed(ball, ballSpeed);
+        }
+      }
+    }
+
+    function animate() {
+      const W = window.innerWidth, H = window.innerHeight;
+
+      // parole
+      for (const b of words) {
+        b.w = b.el.offsetWidth;
+        b.h = b.el.offsetHeight;
+        b.x += b.vx;
+        b.y += b.vy;
+
+        if (b.x <= 0)            { b.x = 0;       b.vx =  Math.abs(b.vx); }
+        else if (b.x >= W - b.w) { b.x = W - b.w; b.vx = -Math.abs(b.vx); }
+        if (b.y <= 0)            { b.y = 0;       b.vy =  Math.abs(b.vy); }
+        else if (b.y >= H - b.h) { b.y = H - b.h; b.vy = -Math.abs(b.vy); }
+
+      }
+
+      // pallina
+      ball.x += ball.vx;
+      ball.y += ball.vy;
+      if (ball.x <= R)         { ball.x = R;     ball.vx =  Math.abs(ball.vx); }
+      else if (ball.x >= W - R){ ball.x = W - R; ball.vx = -Math.abs(ball.vx); }
+      if (ball.y <= R)         { ball.y = R;     ball.vy =  Math.abs(ball.vy); }
+      else if (ball.y >= H - R){ ball.y = H - R; ball.vy = -Math.abs(ball.vy); }
+
+      for (const b of words) {
+        ballVsRect({ l: b.x, t: b.y, r: b.x + b.w, b: b.y + b.h }, b);
+      }
+
+      // disegno
+      for (const b of words) {
+        b.el.style.transform = `translate(${b.x}px, ${b.y}px)`;
+      }
+      ballEl.style.transform = `translate(${ball.x - R}px, ${ball.y - R}px)`;
+
+      requestAnimationFrame(animate);
+    }
+
+    animate();
+  </script>
+</body>
+</html>
